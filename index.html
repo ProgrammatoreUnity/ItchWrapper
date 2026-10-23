@@ -63,6 +63,13 @@
 
   <button id="create" style="display:none">Crea webapp</button>
 
+  <div class="card" id="bmcard">
+    <b>Metodo consigliato: segnalibro</b>
+    <p style="font-size:14px;color:var(--mut);margin:6px 0 0">Installalo una volta sola, poi aprilo mentre sei sulla pagina itch del gioco: ti riporta qui con tutto già compilato.</p>
+    <button class="sec" id="copybm">Copia codice segnalibro</button>
+    <textarea id="bmcode" readonly style="width:100%;height:70px;margin-top:10px;font-size:11px;border-radius:8px;background:transparent;color:inherit;border:1px solid #8884"></textarea>
+  </div>
+
   <div class="card" id="how">
     <b>Fatto.</b> Questa pagina ora è la webapp.<br>
     Apri <b>Condividi → Aggiungi a Home</b> in Safari. Il link contiene già gioco, nome e icona.
@@ -211,10 +218,56 @@ function startPlayer(cfg){
   f.src = cfg.u;
 }
 
+/* ---------- bookmarklet ---------- */
+// Gira SULLA pagina itch: legge l'URL reale del gioco dal DOM e torna qui.
+function itchBookmarklet(){
+  var h = document.documentElement.innerHTML.replace(/\\\//g,'/').replace(/&quot;/g,'"').replace(/&amp;/g,'&');
+  var m = h.match(/https:\/\/[\w.-]*itch\.zone\/html\/[^"'\s<>\\]+/);
+  if(!m){ alert('Non trovo un gioco HTML5 in questa pagina. Sei sulla pagina itch del gioco?'); return; }
+  var g = function(p){ var e = document.querySelector('meta[property="'+p+'"]'); return e ? e.content : ''; };
+  var d = { u: m[0], n: (g('og:title') || document.title).replace(/\s+by\s+.+$/i,'').trim(), i: g('og:image') };
+  location.href = '__BASE__' + String.fromCharCode(35) + 'add=' + encodeURIComponent(JSON.stringify(d));
+}
+const BASE = location.origin + location.pathname;
+$('bmcode').value = 'javascript:(' + itchBookmarklet.toString().replace('__BASE__', BASE).replace(/\n\s*/g,' ') + ')()';
+$('copybm').onclick = async ()=>{
+  try{ await navigator.clipboard.writeText($('bmcode').value); $('copybm').textContent = 'Copiato ✓'; }
+  catch(e){ $('bmcode').select(); document.execCommand('copy'); $('copybm').textContent = 'Copiato ✓'; }
+};
+
+/* dati arrivati dal segnalibro → anteprima pronta */
+async function receive(d){
+  $('itch').value = '';
+  $('direct').value = d.u;
+  $('name').value = d.n || '';
+  let icon = null;
+  if(d.i){
+    st('Scarico icona…');
+    try{ icon = await toSquareDataUri(await viaProxy(d.i,'blob')); }
+    catch(e){ icon = d.i; }
+  }
+  found = {u:d.u, n:d.n || 'Game', i:icon};
+  $('pname').textContent = found.n;
+  $('purl').textContent = found.u;
+  $('pimg').src = found.i || '';
+  $('pimg').style.visibility = found.i ? 'visible':'hidden';
+  $('preview').style.display = 'flex';
+  $('create').style.display = 'block';
+  st('Gioco ricevuto dal segnalibro. Se vuoi un\'icona tua, caricala e premi "Trova gioco"; altrimenti premi "Crea webapp".');
+}
+
 (function init(){
   const m = location.hash.match(/g=([\w-]+)/);
   if(m){
     try{ startPlayer(b64d(m[1])); return; }catch(e){ console.error(e); }
+  }
+  const a = location.hash.match(/add=(.+)$/);
+  if(a){
+    try{
+      const d = JSON.parse(decodeURIComponent(a[1]));
+      history.replaceState(null,'',location.pathname);
+      receive(d);
+    }catch(e){ st('Dati del segnalibro non validi.'); }
   }
 })();
 </script>
