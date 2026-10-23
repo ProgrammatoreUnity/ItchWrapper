@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Game">
+<title>Itch → WebApp</title>
+<style>
+  :root{color-scheme:dark light;--bg:#111;--fg:#eee;--card:#1d1d1f;--acc:#fa5c5c;--mut:#999}
+  @media(prefers-color-scheme:light){:root{--bg:#f4f4f6;--fg:#111;--card:#fff;--mut:#666}}
+  *{box-sizing:border-box}
+  body{margin:0;font:16px/1.4 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+  main{max-width:520px;margin:0 auto;padding:24px 16px calc(24px + env(safe-area-inset-bottom))}
+  h1{font-size:22px;margin:0 0 4px}
+  p.sub{color:var(--mut);margin:0 0 20px;font-size:14px}
+  .card{background:var(--card);border-radius:14px;padding:16px;margin-bottom:14px}
+  label{display:block;font-size:13px;color:var(--mut);margin:12px 0 4px}
+  label:first-child{margin-top:0}
+  input[type=url],input[type=text]{width:100%;padding:12px;border-radius:10px;border:1px solid #8884;background:transparent;color:inherit;font-size:16px}
+  input[type=file]{width:100%;font-size:14px}
+  button{width:100%;padding:13px;border:0;border-radius:10px;background:var(--acc);color:#fff;font-size:16px;font-weight:600;margin-top:14px}
+  button.sec{background:#8883;color:inherit}
+  button:disabled{opacity:.5}
+  #status{font-size:14px;color:var(--mut);margin-top:10px;white-space:pre-wrap}
+  #preview{display:none;align-items:center;gap:12px}
+  #preview img{width:72px;height:72px;border-radius:16px;object-fit:cover;background:#8883}
+  #preview b{display:block}
+  #preview small{color:var(--mut);word-break:break-all}
+  #how{display:none;font-size:14px}
+  #game{position:fixed;inset:0;width:100%;height:100dvh;border:0;background:#000;display:none}
+</style>
+</head>
+<body>
+
+<main id="ui">
+  <h1>Itch → WebApp</h1>
+  <p class="sub">Incolla il link di un gioco WebGL su itch.io e crea una webapp che parte direttamente, senza il tasto "Run".</p>
+
+  <div class="card">
+    <label for="itch">Link itch.io</label>
+    <input id="itch" type="url" inputmode="url" placeholder="https://autore.itch.io/gioco">
+
+    <label for="direct">Oppure link diretto al gioco (opzionale, se la ricerca automatica fallisce)</label>
+    <input id="direct" type="url" inputmode="url" placeholder="https://html-classic.itch.zone/html/123456/index.html">
+
+    <label for="name">Nome (opzionale)</label>
+    <input id="name" type="text" placeholder="Si compila da solo">
+
+    <label for="icon">Icona personalizzata (opzionale, vince su quella automatica)</label>
+    <input id="icon" type="file" accept="image/*">
+
+    <button id="find">Trova gioco</button>
+    <div id="status"></div>
+  </div>
+
+  <div class="card" id="preview">
+    <img id="pimg" alt="">
+    <div><b id="pname"></b><small id="purl"></small></div>
+  </div>
+
+  <button id="create" style="display:none">Crea webapp</button>
+
+  <div class="card" id="how">
+    <b>Fatto.</b> Questa pagina ora è la webapp.<br>
+    Apri <b>Condividi → Aggiungi a Home</b> in Safari. Il link contiene già gioco, nome e icona.
+    <button class="sec" id="back">Crea un'altra webapp</button>
+  </div>
+</main>
+
+<iframe id="game" allow="fullscreen; autoplay; gamepad; accelerometer; gyroscope; clipboard-write; web-share" allowfullscreen></iframe>
+
+<script>
+const PROXIES = [
+  u => 'https://corsproxy.io/?url=' + encodeURIComponent(u),
+  u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+];
+const $ = id => document.getElementById(id);
+
+/* ---------- helpers ---------- */
+const b64e = obj => btoa(unescape(encodeURIComponent(JSON.stringify(obj)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const b64d = s => JSON.parse(decodeURIComponent(escape(atob(s.replace(/-/g,'+').replace(/_/g,'/')))));
+
+async function viaProxy(url, type){
+  let lastErr;
+  for(const p of PROXIES){
+    try{
+      const r = await fetch(p(url));
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      return type==='blob' ? await r.blob() : await r.text();
+    }catch(e){ lastErr = e; }
+  }
+  throw lastErr || new Error('proxy non raggiungibili');
+}
+
+function decodeEntities(s){
+  return s.replace(/\\\//g,'/').replace(/&quot;/g,'"').replace(/&#0?39;/g,"'")
+          .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
+}
+
+function extractGameUrl(html){
+  const t = decodeEntities(html);
+  let m = t.match(/https:\/\/[\w.-]*itch\.zone\/html\/[^"'\s<>\\]+/);
+  if(m) return m[0];
+  m = t.match(/https:\/\/itch\.io\/embed-upload\/\d+[^"'\s<>\\]*/);
+  return m ? m[0] : null;
+}
+function meta(html, prop){
+  const re = new RegExp('<meta[^>]+(?:property|name)=["\']'+prop+'["\'][^>]*content=["\']([^"\']+)["\']','i');
+  const re2 = new RegExp('<meta[^>]+content=["\']([^"\']+)["\'][^>]*(?:property|name)=["\']'+prop+'["\']','i');
+  const m = html.match(re) || html.match(re2);
+  return m ? decodeEntities(m[1]) : null;
+}
+
+/* ritaglia/scala a quadrato 180x180 → data URI PNG */
+function toSquareDataUri(blob){
+  return new Promise((res, rej)=>{
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = ()=>{
+      const S = 180, c = document.createElement('canvas');
+      c.width = c.height = S;
+      const g = c.getContext('2d');
+      const side = Math.min(img.width, img.height);
+      g.drawImage(img, (img.width-side)/2, (img.height-side)/2, side, side, 0, 0, S, S);
+      URL.revokeObjectURL(url);
+      res(c.toDataURL('image/png'));
+    };
+    img.onerror = ()=>{ URL.revokeObjectURL(url); rej(new Error('immagine non valida')); };
+    img.src = url;
+  });
+}
+
+const st = m => $('status').textContent = m;
+
+/* ---------- stato launcher ---------- */
+let found = null; // {u, n, i}
+
+$('find').onclick = async ()=>{
+  const itch = $('itch').value.trim();
+  let direct = $('direct').value.trim();
+  if(!itch && !direct){ st('Inserisci un link.'); return; }
+  $('find').disabled = true; found = null;
+  $('create').style.display = $('preview').style.display = 'none';
+
+  try{
+    let gameUrl = direct, title = $('name').value.trim(), iconUri = null, iconRemote = null;
+
+    if(itch){
+      st('Leggo la pagina itch…');
+      let html = null;
+      try{ html = await viaProxy(itch, 'text'); }
+      catch(e){ if(!direct) throw new Error('Impossibile leggere la pagina (proxy CORS non raggiungibili). Prova col link diretto.'); }
+      if(html){
+        if(!gameUrl) gameUrl = extractGameUrl(html);
+        if(!title) title = (meta(html,'og:title') || (html.match(/<title>([^<]+)/i)||[])[1] || '').replace(/\s+by\s+.+$/i,'').trim();
+        iconRemote = meta(html,'og:image');
+      }
+    }
+    if(!gameUrl) throw new Error('Non ho trovato il link reale del gioco. Il gioco potrebbe non essere HTML5 o la pagina è cambiata: incolla il link diretto nel secondo campo.');
+
+    // icona: file utente > og:image > nulla
+    const f = $('icon').files[0];
+    if(f){
+      st('Preparo icona…');
+      iconUri = await toSquareDataUri(f);
+    }else if(iconRemote){
+      st('Scarico icona…');
+      try{ iconUri = await toSquareDataUri(await viaProxy(iconRemote,'blob')); }
+      catch(e){ iconUri = iconRemote; } // fallback: URL remoto (potrebbe non essere quadrato)
+    }
+
+    found = {u:gameUrl, n: title || 'Game', i: iconUri};
+    $('pname').textContent = found.n;
+    $('purl').textContent = found.u;
+    $('pimg').src = found.i || '';
+    $('pimg').style.visibility = found.i ? 'visible':'hidden';
+    $('preview').style.display = 'flex';
+    $('create').style.display = 'block';
+    st(found.i ? 'Trovato. Controlla e crea la webapp.' : 'Trovato, ma senza icona: caricane una e premi di nuovo "Trova gioco", oppure crea comunque.');
+  }catch(e){
+    st('Errore: ' + e.message);
+  }finally{
+    $('find').disabled = false;
+  }
+};
+
+$('create').onclick = ()=>{
+  if(!found) return;
+  location.hash = 'g=' + b64e(found);
+  location.reload();
+};
+$('back').onclick = ()=>{ history.replaceState(null,'',location.pathname); location.reload(); };
+
+/* ---------- modalità player ---------- */
+function setHead(rel, href){
+  let l = document.querySelector('link[rel="'+rel+'"]');
+  if(!l){ l = document.createElement('link'); l.rel = rel; document.head.appendChild(l); }
+  l.href = href;
+}
+function startPlayer(cfg){
+  document.title = cfg.n;
+  document.querySelector('meta[name="apple-mobile-web-app-title"]').content = cfg.n;
+  if(cfg.i){ setHead('apple-touch-icon', cfg.i); setHead('icon', cfg.i); }
+  document.body.style.background = '#000';
+  $('ui').style.display = 'none';
+  const f = $('game');
+  f.style.display = 'block';
+  f.src = cfg.u;
+}
+
+(function init(){
+  const m = location.hash.match(/g=([\w-]+)/);
+  if(m){
+    try{ startPlayer(b64d(m[1])); return; }catch(e){ console.error(e); }
+  }
+})();
+</script>
+</body>
+</html>
